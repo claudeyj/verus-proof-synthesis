@@ -151,24 +151,70 @@ class LLM:
                 self.logger.info(
                     f"Invoking model {engine} with client {self.client_id} with num={answer_num}"
                 )
+                # For DeepSeek the API supports only n=1; for DeepSeek and
+                # answer_num>1 we repeatedly call the API and aggregate results.
+                # For other providers we request multiple responses in one call
+                # by setting n=answer_num.
+                uses_deepseek = engine.startswith("deepseek")
                 if is_reasoning_model(engine):
-                    answers = self.client[self.client_id].chat.completions.create(
-                        model=engine,
-                        messages=messages,
-                        temperature=temp,
-                        max_completion_tokens=20000,
-                        n=answer_num,
-                    )
+                    if uses_deepseek and answer_num > 1:
+                        collected_texts = []
+                        total_prompt = 0
+                        total_completion = 0
+                        for _ in range(answer_num):
+                            resp = self.client[self.client_id].chat.completions.create(
+                                model=engine,
+                                messages=messages,
+                                temperature=temp,
+                                max_completion_tokens=20000,
+                                n=1,
+                            )
+                            collected_texts.extend([c.message.content for c in resp.choices])
+                            if hasattr(resp, "usage"):
+                                total_prompt += getattr(resp.usage, "prompt_tokens", 0)
+                                total_completion += getattr(resp.usage, "completion_tokens", 0)
+                        answers = None
+                        aggregated_responses = collected_texts
+                    else:
+                        # non-DeepSeek or single response: request multiple choices in one call
+                        answers = self.client[self.client_id].chat.completions.create(
+                            model=engine,
+                            messages=messages,
+                            temperature=temp,
+                            max_completion_tokens=20000,
+                            n=answer_num,
+                        )
                 else:
-                    answers = self.client[self.client_id].chat.completions.create(
-                        model=engine,
-                        messages=messages,
-                        temperature=temp,
-                        max_tokens=max_tokens,
-                        n=answer_num,
-                        response_format={"type": "json_object" if json else "text"},
-                        timeout=timeout,
-                    )
+                    if uses_deepseek and answer_num > 1:
+                        collected_texts = []
+                        total_prompt = 0
+                        total_completion = 0
+                        for _ in range(answer_num):
+                            resp = self.client[self.client_id].chat.completions.create(
+                                model=engine,
+                                messages=messages,
+                                temperature=temp,
+                                max_tokens=max_tokens,
+                                n=1,
+                                response_format={"type": "json_object" if json else "text"},
+                                timeout=timeout,
+                            )
+                            collected_texts.extend([c.message.content for c in resp.choices])
+                            if hasattr(resp, "usage"):
+                                total_prompt += getattr(resp.usage, "prompt_tokens", 0)
+                                total_completion += getattr(resp.usage, "completion_tokens", 0)
+                        answers = None
+                        aggregated_responses = collected_texts
+                    else:
+                        answers = self.client[self.client_id].chat.completions.create(
+                            model=engine,
+                            messages=messages,
+                            temperature=temp,
+                            max_tokens=max_tokens,
+                            n=answer_num,
+                            response_format={"type": "json_object" if json else "text"},
+                            timeout=timeout,
+                        )
                 break
             except openai.APITimeoutError as e:
                 self.logger.warning(f"API Timeout Error: {str(e)}")
@@ -222,14 +268,25 @@ class LLM:
                 else:
                     return []
 
-        # Log the input and output tokens here
-        self.logger.info(f"Input tokens: {answers.usage.prompt_tokens}")
-        self.logger.info(f"Output tokens: {answers.usage.completion_tokens}")
-
-        if return_msg:
-            return [response.message.content for response in answers.choices], messages
+        # Log the input and output tokens here and return contents.
+        if answers is not None:
+            # single-call result
+            if hasattr(answers, "usage"):
+                self.logger.info(f"Input tokens: {answers.usage.prompt_tokens}")
+                self.logger.info(f"Output tokens: {answers.usage.completion_tokens}")
+            contents = [response.message.content for response in answers.choices]
+            if return_msg:
+                return contents, messages
+            else:
+                return contents
         else:
-            return [response.message.content for response in answers.choices]
+            # aggregated multi-call result
+            self.logger.info(f"Input tokens: {total_prompt}")
+            self.logger.info(f"Output tokens: {total_completion}")
+            if return_msg:
+                return aggregated_responses, messages
+            else:
+                return aggregated_responses
 
     def infer_llm_with_history(
         self,
@@ -261,18 +318,49 @@ class LLM:
 
         while True:
             try:
-                answers = self.client[self.client_id].chat.completions.create(
-                    model=engine,
-                    messages=messages,
-                    temperature=temp,
-                    max_tokens=max_tokens,
-                    top_p=1.0,
-                    n=answer_num,
-                    frequency_penalty=0,
-                    presence_penalty=0,
-                    stop=None,
-                    response_format={"type": "json_object" if json else "text"},
-                )
+                # For DeepSeek the API supports only n=1; only loop for DeepSeek
+                # when multiple responses are requested. For other providers,
+                # request multiple responses in a single call via n=answer_num.
+                aggregated_responses = None
+                total_prompt = 0
+                total_completion = 0
+                uses_deepseek = engine.startswith("deepseek")
+                if uses_deepseek and answer_num > 1:
+                    collected_texts = []
+                    total_prompt = 0
+                    total_completion = 0
+                    for _ in range(answer_num):
+                        resp = self.client[self.client_id].chat.completions.create(
+                            model=engine,
+                            messages=messages,
+                            temperature=temp,
+                            max_tokens=max_tokens,
+                            top_p=1.0,
+                            n=1,
+                            frequency_penalty=0,
+                            presence_penalty=0,
+                            stop=None,
+                            response_format={"type": "json_object" if json else "text"},
+                        )
+                        collected_texts.extend([c.message.content for c in resp.choices])
+                        if hasattr(resp, "usage"):
+                            total_prompt += getattr(resp.usage, "prompt_tokens", 0)
+                            total_completion += getattr(resp.usage, "completion_tokens", 0)
+                    answers = None
+                    aggregated_responses = collected_texts
+                else:
+                    answers = self.client[self.client_id].chat.completions.create(
+                        model=engine,
+                        messages=messages,
+                        temperature=temp,
+                        max_tokens=max_tokens,
+                        top_p=1.0,
+                        n=answer_num,
+                        frequency_penalty=0,
+                        presence_penalty=0,
+                        stop=None,
+                        response_format={"type": "json_object" if json else "text"},
+                    )
                 break
             except openai.NotFoundError:
                 self._add_client_id()
@@ -288,6 +376,20 @@ class LLM:
                 else:
                     self._add_client_id()
                 continue
+        # If we aggregated multiple calls, return aggregated_responses
+        if answers is None:
+            if return_msg:
+                return aggregated_responses, messages
+            else:
+                return aggregated_responses
+
+        # If we aggregated multiple calls, return aggregated_responses
+        if answers is None:
+            if return_msg:
+                return aggregated_responses, messages
+            else:
+                return aggregated_responses
+
         if return_msg:
             return [
                 response.message.content if response.finish_reason != "length" else ""
