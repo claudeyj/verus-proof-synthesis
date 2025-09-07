@@ -153,6 +153,7 @@ Please follow these steps in adding loop invariants for every loop:
 1. You should identify every variable that is read in the loop  (e.g., x[k], y), particularly for array elements like x[k], and add an invariant about the initial value for EACH such variable and array;
 2. You should identify every variable that is written (e.g., y = ..., x.set(..,..)) in every loop, and add an invariant about the value of that variable. Even if an invariant is already specified earlier in the program, please do repeat it in every loop suitable.
 3. You can leverage the spec functions and proof functions in the invariant.
+4. You have to add a decrease clause for every loop.
 """
         # Integrate the Seq knowledge if needed
         instruction += self.refinement.add_seq_knowledge(code, instruction)
@@ -194,6 +195,7 @@ Please follow these steps in adding loop invariants for every loop:
 1. You should identify every variable that is read in the loop  (e.g., x[k], y), particularly for array elements like x[k], and add an invariant about the initial value for EACH such variable and array;
 2. You should identify every variable that is written (e.g., y = ..., x.set(..,..)) in every loop, and add an invariant about the value of that variable. Even if an invariant is already specified earlier in the program, please do repeat it in every loop suitable.
 3. You can leverage the spec functions and proof functions in the invariant.
+4. You have to add a decrease clause for every loop.
 
 ## Step 2: Constant propagation refinement
 
